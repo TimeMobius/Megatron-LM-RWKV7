@@ -1531,7 +1531,11 @@ def get_tensor_shapes(
             tensor_shapes.append((decoder_seq_length, micro_batch_size, config.hidden_size))
     else:  # model_type == ModelType.encoder_or_decoder
         if config.sequence_parallel: 
-            tensor_shapes.append((1+parallel_state.get_tensor_model_parallel_world_size(), seq_length, micro_batch_size, config.hidden_size)) # hideen states
+            # RWKV7 sequence parallel keeps v0 as a single local-sequence, full-hidden cache.
+            # Use the same two-slot protocol as non-SP:
+            #   slot 0 -> hidden states
+            #   slot 1 -> v0 cache
+            tensor_shapes.append((2, seq_length, micro_batch_size, config.hidden_size)) # hidden states + v0
         else:
             tensor_shapes.append((2, seq_length, micro_batch_size, config.hidden_size)) # hideen states
         # tensor_shapes.append((seq_length, micro_batch_size, config.hidden_size)) # v0
