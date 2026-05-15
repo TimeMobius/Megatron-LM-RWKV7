@@ -1530,15 +1530,22 @@ def get_tensor_shapes(
         else:
             tensor_shapes.append((decoder_seq_length, micro_batch_size, config.hidden_size))
     else:  # model_type == ModelType.encoder_or_decoder
-        if config.sequence_parallel: 
-            # RWKV7 sequence parallel keeps v0 as a single local-sequence, full-hidden cache.
-            # Use the same two-slot protocol as non-SP:
-            #   slot 0 -> hidden states
-            #   slot 1 -> v0 cache
-            tensor_shapes.append((2, seq_length, micro_batch_size, config.hidden_size)) # hidden states + v0
+        if config.sequence_parallel:
+            # Under Megatron sequence parallelism, ColumnParallelLinear all-gathers
+            # sequence shards before the matmul, so RWKV7's v0 cache materializes at
+            # full sequence length on each TP rank. Keep one hidden-state slot plus
+            # one full-hidden v0 slot per TP rank so later PP stages can reconstruct
+            # the full-sequence cache and slice their local hidden shard correctly.
+            tensor_shapes.append(
+                (
+                    1 + parallel_state.get_tensor_model_parallel_world_size(),
+                    seq_length,
+                    micro_batch_size,
+                    config.hidden_size,
+                )
+            )
         else:
-            tensor_shapes.append((2, seq_length, micro_batch_size, config.hidden_size)) # hideen states
-        # tensor_shapes.append((seq_length, micro_batch_size, config.hidden_size)) # v0
+            tensor_shapes.append((2, seq_length, micro_batch_size, config.hidden_size))
     return tensor_shapes
 
 

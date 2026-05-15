@@ -1,4 +1,5 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+import os
 import warnings
 from abc import ABC
 from dataclasses import dataclass, field
@@ -16,6 +17,63 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import make_viewless_tensor
+
+
+def _rwkv7_layer_probe_enabled() -> bool:
+    return os.getenv("RWKV7_DEBUG_V0_PROBE", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _rwkv7_layer_probe_rank_filter():
+    raw = os.getenv("RWKV7_DEBUG_V0_PROBE_RANKS", "").strip()
+    if not raw:
+        return None
+
+    ranks = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            ranks.add(int(item))
+        except ValueError:
+            continue
+    return ranks if ranks else None
+
+
+_RWKV7_LAYER_PROBE_COUNTS = {}
+
+
+def _rwkv7_layer_probe(tag: str, layer_number: int, **values) -> None:
+    if not _rwkv7_layer_probe_enabled():
+        return
+
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    rank_filter = _rwkv7_layer_probe_rank_filter()
+    if rank_filter is not None and rank not in rank_filter:
+        return
+
+    pp_rank = parallel_state.get_pipeline_model_parallel_rank()
+    tp_rank = parallel_state.get_tensor_model_parallel_rank()
+    key = (tag, rank, pp_rank, tp_rank, layer_number)
+    current = _RWKV7_LAYER_PROBE_COUNTS.get(key, 0)
+    if current >= 8:
+        return
+    _RWKV7_LAYER_PROBE_COUNTS[key] = current + 1
+
+    parts = [
+        f"tag={tag}",
+        f"rank={rank}",
+        f"pp_rank={pp_rank}",
+        f"tp_rank={tp_rank}",
+        f"layer={layer_number}",
+    ]
+    for name, value in values.items():
+        if isinstance(value, torch.Tensor):
+            parts.append(f"{name}.shape={tuple(value.shape)}")
+            parts.append(f"{name}.dtype={value.dtype}")
+        else:
+            parts.append(f"{name}={value}")
+    print("[RWKV7_LAYER_PROBE] " + " | ".join(parts), flush=True)
 
 
 def get_transformer_layer_offset(config: TransformerConfig):
@@ -398,6 +456,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                 input_layernorm_output = torch.cat([input_layernorm_output.unsqueeze(0), v0], dim=0)
             else:
                 input_layernorm_output = torch.stack([input_layernorm_output, v0], dim=0)
+        _rwkv7_layer_probe(
+            "before_self_attention",
+            self.layer_number,
+            sequence_parallel=self.config.sequence_parallel,
+            input_layernorm_output=input_layernorm_output,
+            v0=v0,
+        )
         attention_output_with_bias = self.self_attention(
             input_layernorm_output,
             attention_mask=attention_mask,
@@ -413,6 +478,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             attention_output_with_bias, v0 = (attention_output_with_bias[0][0],attention_output_with_bias[1]), attention_output_with_bias[0][1:]
         else:
             attention_output_with_bias, v0 = (attention_output_with_bias[0][0],attention_output_with_bias[1]), attention_output_with_bias[0][1]
+        _rwkv7_layer_probe(
+            "after_self_attention",
+            self.layer_number,
+            attention_output=attention_output_with_bias[0],
+            attention_bias=attention_output_with_bias[1],
+            v0=v0,
+        )
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
