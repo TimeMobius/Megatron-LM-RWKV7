@@ -40,6 +40,40 @@ def _rwkv7_layer_probe_rank_filter():
     return ranks if ranks else None
 
 
+def _rwkv7_layer_probe_pp_filter():
+    raw = os.getenv("RWKV7_DEBUG_V0_PROBE_PP_RANKS", "").strip()
+    if not raw:
+        return None
+
+    ranks = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            ranks.add(int(item))
+        except ValueError:
+            continue
+    return ranks if ranks else None
+
+
+def _rwkv7_layer_probe_layer_filter():
+    raw = os.getenv("RWKV7_DEBUG_V0_PROBE_LAYERS", "").strip()
+    if not raw:
+        return None
+
+    layers = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            layers.add(int(item))
+        except ValueError:
+            continue
+    return layers if layers else None
+
+
 _RWKV7_LAYER_PROBE_COUNTS = {}
 
 
@@ -54,6 +88,13 @@ def _rwkv7_layer_probe(tag: str, layer_number: int, **values) -> None:
 
     pp_rank = parallel_state.get_pipeline_model_parallel_rank()
     tp_rank = parallel_state.get_tensor_model_parallel_rank()
+    pp_filter = _rwkv7_layer_probe_pp_filter()
+    if pp_filter is not None and pp_rank not in pp_filter:
+        return
+    layer_filter = _rwkv7_layer_probe_layer_filter()
+    if layer_filter is not None and layer_number not in layer_filter:
+        return
+
     key = (tag, rank, pp_rank, tp_rank, layer_number)
     current = _RWKV7_LAYER_PROBE_COUNTS.get(key, 0)
     if current >= 8:
