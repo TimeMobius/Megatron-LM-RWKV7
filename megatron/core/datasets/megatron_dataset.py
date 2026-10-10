@@ -83,8 +83,12 @@ class MegatronDataset(ABC, torch.utils.data.Dataset):
             ]
         except (AttributeError, IndexError, ValueError):
             _special_tokens_list = []
-        # If the tokenizer does not have a special_tokens_dict attribute, at least check eos and eod
+        # Wrappers without special_tokens_dict can also alias padding to BOS.
         if not _special_tokens_list:
+            try:
+                _special_tokens_list.append(self.config.tokenizer.bos)
+            except (AttributeError, NotImplementedError):
+                pass
             try:
                 _special_tokens_list.append(self.config.tokenizer.eos)
             except (AttributeError, NotImplementedError):

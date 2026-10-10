@@ -76,6 +76,7 @@ class BlendedDataset(torch.utils.data.Dataset):
         unique_identifiers["split"] = self.split.name
         unique_identifiers["weights"] = self.weights
         unique_identifiers["size"] = self.size
+        unique_identifiers["shuffle_blend_datasets"] = self.config.shuffle_blend_datasets
 
         self.unique_description = json.dumps(
             unique_identifiers, indent=4, default=lambda obj: obj.unique_identifiers
@@ -184,6 +185,11 @@ class BlendedDataset(torch.utils.data.Dataset):
                 helpers.build_exhaustive_blending_indices(
                     dataset_index, dataset_sample_index, self.weights, len(self.datasets)
                 )
+                if self.config.shuffle_blend_datasets and len(self.datasets) > 1:
+                    seed = (self.config.random_seed + self.split.value) % (2**32)
+                    permutation = numpy.random.default_rng(seed).permutation(size)
+                    dataset_index = dataset_index[permutation]
+                    dataset_sample_index = dataset_sample_index[permutation]
 
             dataset_indices, dataset_sizes = numpy.unique(dataset_index, return_counts=True)
             for i, (_index, _size) in enumerate(zip(dataset_indices, dataset_sizes)):

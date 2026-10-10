@@ -377,7 +377,7 @@ class HuggingFaceTokenizer(MegatronTokenizerTextAbstract):
     @property
     def vocab_size(self) -> int:
         """Returns size of tokenizer vocabulary."""
-        return len(self.tokenizer)
+        return max(self.tokenizer.get_vocab().values()) + 1
 
     @property
     def pad_id(self) -> int:

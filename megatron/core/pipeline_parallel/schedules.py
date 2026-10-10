@@ -2141,7 +2141,11 @@ def get_tensor_shapes(
     if config.sequence_parallel:
         effective_seq_length = effective_seq_length // tp_group.size()
 
-    tensor_shapes.append((effective_seq_length, micro_batch_size, config.hidden_size))
+    shape = (effective_seq_length, micro_batch_size, config.hidden_size)
+    if getattr(config, "rwkv7_value_residual", False):
+        slots = 1 + tp_group.size() if config.sequence_parallel else 2
+        shape = (slots, *shape)
+    tensor_shapes.append(shape)
     return tensor_shapes
 
 

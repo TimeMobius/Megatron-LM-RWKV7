@@ -69,6 +69,9 @@ class BlendedMegatronDatasetConfig:
     tokenizer: Optional[MegatronTokenizerBase] = None
     """The MegatronTokenizerBase instance. Required for datasets that do online tokenization."""
 
+    shuffle_blend_datasets: bool = False
+    """Shuffle exhaustive full-length blends using the dataset seed."""
+
     mid_level_dataset_surplus: float = 0.005
     """The sample surplus to build for the mid-level datasets(s). Defaults arbitrarily to 0.005.
        This value is irrelevant for single source data blends. This value may need to be increased
