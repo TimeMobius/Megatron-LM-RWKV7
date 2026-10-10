@@ -157,6 +157,7 @@ from megatron.training.checkpointing import (
 from megatron.training.config import FaultInjectorConfig
 from megatron.training.config.container import PretrainConfigContainer
 from megatron.training.datasets.data_samplers import build_pretraining_data_loader
+from megatron.training.datasets.fixed_eval import FixedEvalDataIterator, reset_fixed_eval_iterator
 from megatron.training.initialize import (
     initialize_megatron,
     set_jit_fusion_options,
@@ -5611,6 +5612,9 @@ def evaluate(
     step_start_event = "on_test_step_start" if is_test else "on_eval_step_start"
     step_end_event = "on_test_step_end" if is_test else "on_eval_step_end"
 
+    if getattr(args, "fixed_eval_samples", False) and not is_test:
+        reset_fixed_eval_iterator(data_iterator)
+
     timers('evaluate', log_level=0).start(barrier=True)
 
     # Turn on evaluation mode which disables dropout.
@@ -6058,7 +6062,11 @@ def build_train_valid_test_data_loaders(build_train_valid_test_datasets_provider
                 train_dataloader = build_pretraining_data_loader(train_ds, consumed_train_samples_in_current_phase)
             valid_dataloaders = []
             for valid_d in valid_ds:
-                if args.skip_train or args.full_validation:
+                if (
+                    args.skip_train
+                    or args.full_validation
+                    or getattr(args, "fixed_eval_samples", False)
+                ):
                     valid_dataloaders.append(build_pretraining_data_loader(valid_d, 0))
                 else:
                     if args.multiple_validation_sets:
@@ -6101,8 +6109,14 @@ def build_train_valid_test_data_iterators(build_train_valid_test_datasets_provid
     dl_type = args.dataloader_type
     assert dl_type in ['single', 'cyclic', 'external']
 
-    def _get_iterator(dataloader_type, dataloader):
+    def _get_iterator(dataloader_type, dataloader, fixed_eval=False):
         """Return dataset iterator."""
+        if fixed_eval:
+            if dataloader_type == "external":
+                raise ValueError("fixed_eval_samples does not support external validation iterators")
+            return FixedEvalDataIterator(
+                dataloader, cyclic_iter if dataloader_type == "cyclic" else None
+            )
         if dataloader_type == "single":
             return RerunDataIterator(iter(dataloader))
         elif dataloader_type == "cyclic":
@@ -6153,11 +6167,14 @@ def build_train_valid_test_data_iterators(build_train_valid_test_datasets_provid
             else:
                 valid_dl_type = "cyclic" if args.full_validation else dl_type
                 valid_data_iterators = [
-                    _get_iterator(valid_dl_type, dl) for dl in valid_dataloaders
+                    _get_iterator(valid_dl_type, dl, getattr(args, "fixed_eval_samples", False))
+                    for dl in valid_dataloaders
                 ]
         elif valid_dataloaders[0] is not None:
             valid_dl_type = "cyclic" if args.full_validation else dl_type
-            valid_data_iterators = _get_iterator(valid_dl_type, valid_dataloaders[0])
+            valid_data_iterators = _get_iterator(
+                valid_dl_type, valid_dataloaders[0], getattr(args, "fixed_eval_samples", False)
+            )
         else:
             valid_data_iterators = None
     else:
