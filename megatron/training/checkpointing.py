@@ -1241,6 +1241,17 @@ def save_checkpoint(
         else:
             iter_finalize_fn()
 
+    # The previous barrier covers shard writes only. Rank zero also writes
+    # run_config and the iteration tracker in iter_finalize_fn; the last rank
+    # must wait for that publication before W&B reads the tracker file.
+    if (
+        not skip_weight_ckpt
+        and not args.async_save
+        and ckpt_type != CheckpointType.LOCAL
+        and torch.distributed.is_initialized()
+    ):
+        torch.distributed.barrier()
+
     # Additional callback for one_logger (last rank)
     if not skip_weight_ckpt and (
         not torch.distributed.is_initialized() or is_last_rank()
@@ -3149,14 +3160,12 @@ def load_checkpoint(
                 and not is_torch_dist
                 and ckpt_format not in ['torch_dcp', 'fsdp_dtensor']
             ):
-                # NOTE: this is a manual read of the tracker file.
-                # This code should not be reached when reading from a non_persistent checkpoint
-                assert not is_torch_dist
-                tracker_filename = get_checkpoint_tracker_filename(load_dir)
-                iteration, release = read_metadata(tracker_filename)
-                model_checkpoint_name = get_checkpoint_name(load_dir, iteration, release)
+                # Use the model checkpoint selected above. The tracker can
+                # point to a newer checkpoint when --ckpt-step is specified;
+                # rereading it would mix old weights with new Adam states and
+                # overwrite the restored iteration.
                 optim_checkpoint_name = get_distributed_optimizer_checkpoint_name(
-                    model_checkpoint_name
+                    checkpoint_name
                 )
                 optimizer.load_parameter_state(
                     optim_checkpoint_name,

@@ -990,6 +990,21 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
             #   empty tensors (i.e., torch.empty), which in turn reduces memory
             #   fragmentation.
             # - Real data is overwritten during load_parameter_state().
+            # TE's load_state_dict copies the input into new CUDA state buffers.
+            # Keep FP32 placeholders on CPU so they do not retain an extra full
+            # optimizer state on CUDA throughout that copy. Quantized/precision-
+            # aware states keep their existing device initialization path.
+            cpu_placeholders = (
+                USING_TE_OPTIMIZER
+                and isinstance(self.optimizer, Adam)
+                and not self.config.use_precision_aware_optimizer_no_fp8_or_ds_fp8
+                and all(
+                    self._get_state_key_dtype(key) == torch.float32
+                    and getattr(self.optimizer, 'name_to_dtype_map', {}).get(key) == torch.float32
+                    for key in self.optimizer_state_keys
+                )
+            )
+            placeholder_device = 'cpu' if cpu_placeholders else torch.cuda.current_device()
             state_dict_state = []
             for gbuf_range_maps in self.gbuf_ranges:
                 for gbuf_range_map_for_all_buckets in gbuf_range_maps.values():
@@ -1006,7 +1021,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                             # Allocate dummy tensors.
                             numel = len(param_range_map["gbuf_world"])
                             init_shard = lambda dtype=torch.float32: torch.empty(
-                                (numel,), dtype=dtype, device=torch.cuda.current_device()
+                                (numel,), dtype=dtype, device=placeholder_device
                             )
 
                             # For precision_aware_optimizer, the empty tensors should also be
