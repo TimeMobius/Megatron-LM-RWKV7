@@ -2391,6 +2391,12 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                 for model_param, tensors in recv_tensors.items():
                     self._set_main_param_and_optimizer_states(model_param, tensors)
 
+        if isinstance(self.optimizer, HybridDeviceOptimizer):
+            # The scatter above replaces state tensors with CPU views. Rebind
+            # the sub-optimizers and move GPU-owned moments back before stepping,
+            # just as the other parameter-state load formats already do.
+            self.optimizer._sync_hdo_state_to_sub_optimizers()
+
     @torch.no_grad()
     def load_parameter_state_from_fully_reshardable(self, state_dict: dict):
         """Load counterpart of sharded_param_state_fully_reshardable.
