@@ -17,7 +17,7 @@ from numpy.core.multiarray import _reconstruct
 from numpy.dtypes import UInt32DType
 
 from megatron.core.enums import ModelType
-from megatron.core.optimizer import OptimizerConfig
+from megatron.core.optimizer import SGD, Adam, OptimizerConfig
 from megatron.core.rerun_state_machine import RerunDiagnostic, RerunMode, RerunState
 from megatron.core.transformer.enums import (
     AttnBackend,
@@ -48,6 +48,11 @@ SAFE_GLOBALS = [
     frozenset,
     Signals,
     torch._C.Generator,  # Needed for torch ckpt format loading after weights_only default change
+    # HybridDeviceOptimizer stores its known CPU/GPU optimizer classes in param groups.
+    torch.optim.AdamW,
+    torch.optim.SGD,
+    Adam,
+    SGD,
 ]
 
 _pickle_patch_lock = threading.Lock()

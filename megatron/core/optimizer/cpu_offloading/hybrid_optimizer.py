@@ -36,6 +36,12 @@ class HybridDeviceOptimizer(torch.optim.Optimizer):
         )
         optimizer.step()
 
+    Args:
+        defer_init (bool): Internal construction option for DistributedOptimizer.
+            Keep only parameter groups and defaults until it replaces this object
+            with an initialized optimizer over owned shards. A deferred object
+            must not be used for training or checkpointing.
+
     Note:
         This optimizer is particularly useful in scenarios where memory
         constraints are present or when leveraging both CPU and GPU resources
@@ -52,6 +58,7 @@ class HybridDeviceOptimizer(torch.optim.Optimizer):
         pin_cpu_grads: bool = True,
         pin_cpu_params: bool = True,
         overlap_cpu_optimizer_d2h_h2d: bool = True,
+        defer_init: bool = False,
         **kwargs,
     ):
         super(HybridDeviceOptimizer, self).__init__(
@@ -75,10 +82,16 @@ class HybridDeviceOptimizer(torch.optim.Optimizer):
         self.pin_cpu_params = pin_cpu_params
         self.overlap_cpu_optimizer_d2h_h2d = overlap_cpu_optimizer_d2h_h2d
         self.param_update_in_fp32 = param_update_in_fp32
+        self._initializing_state = False
         self.sub_optimizer_kwargs = kwargs
 
-        self._init_sub_optimizers()
-        self._register_load_state_dict_hooks()
+        # DistributedOptimizer first needs only param_groups/defaults to build
+        # shard ranges. Allocate masters and register hooks on the replacement
+        # optimizer after sharding. Eager initialization would retain full-size
+        # masters through hook reference cycles until Python's cyclic GC runs.
+        if not defer_init:
+            self._init_sub_optimizers()
+            self._register_load_state_dict_hooks()
 
     def _set_sub_optimizer_grads(self):
         if self.param_update_in_fp32:
@@ -117,6 +130,8 @@ class HybridDeviceOptimizer(torch.optim.Optimizer):
     def _register_param_copy_back_gpu_hook(self):
         def param_copy_back_gpu_hook_closure():
             def param_copy_back_gpu_hook(optimizer, args, kwargs):
+                if self._initializing_state:
+                    return
                 self._h2d_stream.wait_stream(torch.cuda.current_stream())
                 with torch.cuda.stream(self._h2d_stream):
                     for param in _param_generator(optimizer):
@@ -128,6 +143,8 @@ class HybridDeviceOptimizer(torch.optim.Optimizer):
 
         def fp32_param_copy_back_gpu_hook_closure():
             def fp32_param_copy_back_gpu_hook(optimizer, args, kwargs):
+                if self._initializing_state:
+                    return
                 for group in self.param_groups:
                     for param in group["params"]:
                         if param in self.gpu_params_map_cpu_copy:
@@ -351,6 +368,10 @@ class HybridDeviceOptimizer(torch.optim.Optimizer):
                 group_id, _ = param_in_param_group_index[group["params"][0]]
                 update_group_attrs = self.param_groups[group_id].copy()
                 del update_group_attrs["params"]
+                # FusedAdam advances its own counter. A loaded outer group's
+                # checkpoint step is only its initial value; copying it on
+                # every update would keep resetting the GPU Adam bias correction.
+                update_group_attrs.pop("step", None)
                 new_group.update(update_group_attrs)
 
                 new_param_groups.append(new_group)
@@ -461,11 +482,25 @@ class HybridDeviceOptimizer(torch.optim.Optimizer):
         which can solve the problem of checkpoint loading for an inplace operation
         such as loading a torch distributed checkpoint, for example.
         """
-        for group in self.param_groups:
-            for param in group["params"]:
-                param.grad = torch.randn_like(param)
-        self.step()
-        self.zero_grad()
+        # Allocating checkpoint state must leave compute/master weights intact.
+        # A normal random-gradient step also writes changed BF16 shards back to
+        # the model, while the following load only restores optimizer tensors.
+        learning_rates = [group["lr"] for group in self.param_groups]
+        try:
+            # Model checkpoints load after optimizer construction. At this
+            # point its initial masters can still be stale/uninitialized, so
+            # even a zero-lr copyback would corrupt the loaded compute weights.
+            self._initializing_state = True
+            for group in self.param_groups:
+                group["lr"] = 0.0
+                for param in group["params"]:
+                    param.grad = torch.zeros_like(param)
+            self.step()
+        finally:
+            self._initializing_state = False
+            for group, lr in zip(self.param_groups, learning_rates):
+                group["lr"] = lr
+            self.zero_grad()
 
     @property
     def sub_optimizers(self):
