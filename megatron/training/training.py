@@ -3292,6 +3292,10 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
         preserves the default behavior.
     """
     args = get_args()
+    # Optional data-readiness hook runs before any forward/backward work.
+    prepare_data = getattr(forward_step_func, "prepare_data", None)
+    if prepare_data is not None:
+        prepare_data(data_iterator, get_num_microbatches(), training=True)
     timers = get_timers()
 
     # OTel: set up per-step sub-span support.
@@ -5704,6 +5708,10 @@ def evaluate(
             ft_integration.on_eval_step_start()
 
             callback_manager.trigger(step_start_event)
+
+            prepare_data = getattr(forward_step_func, "prepare_data", None)
+            if prepare_data is not None:
+                prepare_data(packed_data_iterator, scheduled_eval_num_microbatches, training=False)
 
             with _otel_managed_span('evaluate', 'megatron.evaluate.step',
                                     **{'megatron.eval_iteration': iteration}):
